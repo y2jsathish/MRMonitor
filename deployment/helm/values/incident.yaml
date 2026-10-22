@@ -1,0 +1,5 @@
+nameOverride: incident-service            # consumes atm.alert.created -> auto-incident rules; publishes atm.incident.created
+image: { repository: atmnexus/incident-service }
+config: { Kafka__GroupId: incident-service }
+secretRefs: [ { env: ConnectionStrings__Postgres, secret: incident-service-secrets, key: incident-postgres-connection } ]
+keyVault: { objects: [ { name: incident-postgres-connection }, { name: kafka-sasl-password } ] }

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>AtmNexus.Tests</RootNamespace>
+    <NoWarn>$(NoWarn);CA1416;xUnit1051</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Shared\AtmNexus.Contracts\AtmNexus.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Agent\AtmNexus.Devices.Abstractions\AtmNexus.Devices.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Agent\AtmNexus.Devices.Xfs\AtmNexus.Devices.Xfs.csproj" />
+    <ProjectReference Include="..\..\src\Agent\AtmNexus.Agent.Core\AtmNexus.Agent.Core.csproj" />
+    <ProjectReference Include="..\..\src\Simulator\AtmNexus.Simulator\AtmNexus.Simulator.csproj" />
+    <ProjectReference Include="..\..\src\Services\AtmNexus.Services.Device\AtmNexus.Services.Device.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="AtmNexus.Contracts" />
+    <Using Include="AtmNexus.Devices" />
+    <Using Include="AtmNexus.Devices.Xfs" />
+    <Using Include="Microsoft.Extensions.Logging.Abstractions" />
+    <Using Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+</Project>

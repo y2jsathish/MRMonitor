@@ -1,0 +1,6 @@
+nameOverride: notification-service        # email / SMS / Teams / webhook fan-out with retry + dead-letter
+image: { repository: atmnexus/notification-service }
+config: { Kafka__GroupId: notification-service }
+secretRefs: [ { env: ConnectionStrings__Postgres, secret: notification-service-secrets, key: notification-postgres-connection } ]
+keyVault: { objects: [ { name: notification-postgres-connection }, { name: kafka-sasl-password }, { name: smtp-credentials }, { name: sms-api-key } ] }
+autoscaling: { minReplicas: 2, maxReplicas: 8 }

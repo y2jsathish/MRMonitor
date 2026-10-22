@@ -1,0 +1,5 @@
+nameOverride: alert-service               # alert rules, escalation timers, ack/clear, suppression
+image: { repository: atmnexus/alert-service }
+config: { Kafka__GroupId: alert-service }
+secretRefs: [ { env: ConnectionStrings__Postgres, secret: alert-service-secrets, key: alert-postgres-connection } ]
+keyVault: { objects: [ { name: alert-postgres-connection }, { name: kafka-sasl-password } ] }

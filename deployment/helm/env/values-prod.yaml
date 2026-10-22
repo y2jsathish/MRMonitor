@@ -1,0 +1,3 @@
+keyVault: { name: kv-atmnexus-prod }
+config: { ASPNETCORE_ENVIRONMENT: Production }
+image: { pullPolicy: IfNotPresent }       # prod deploys by digest: --set image.digest=sha256:...

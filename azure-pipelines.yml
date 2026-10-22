@@ -1,0 +1,83 @@
+# Azure DevOps multi-stage pipeline (CI + CD). GitHub is the source of truth; Azure Pipelines handles environment approvals and
+# deployment to AKS. Environments DEV/SIT/UAT/PROD are Azure DevOps "Environments" carrying the approval + check gates:
+#   DEV  : automatic on every merge to main
+#   SIT  : automatic after DEV smoke tests pass
+#   UAT  : requires QA lead approval + passing SIT regression
+#   PROD : requires CAB change ticket + 2 approvers (dual control) + business-hours/freeze-window check
+trigger:
+  branches: { include: [main, 'release/*'] }
+  tags: { include: ['v*'] }
+pr: none          # PRs are validated by GitHub Actions
+
+resources:
+  repositories:
+    - repository: self
+
+variables:
+  - group: atmnexus-common           # ACR name, AKS names, KeyVault names (no secrets: uses workload identity / service connections)
+  - name: buildConfiguration
+    value: Release
+  - name: isRelease
+    value: ${{ startsWith(variables['Build.SourceBranch'], 'refs/tags/v') }}
+
+stages:
+  - stage: Build
+    jobs:
+      - job: BuildTest
+        pool: { vmImage: ubuntu-24.04 }
+        steps:
+          - checkout: self
+            fetchDepth: 0
+          - task: UseDotNet@2
+            inputs: { useGlobalJson: true }
+          - task: gitversion/setup@3
+            inputs: { versionSpec: 6.x }
+          - task: gitversion/execute@3
+            name: gv
+          - script: |
+              dotnet new sln -n AtmNexus --force
+              dotnet sln AtmNexus.sln add $(find src tests -name '*.csproj')
+              dotnet restore && dotnet build -c $(buildConfiguration) --no-restore
+              dotnet test -c $(buildConfiguration) --no-build --logger trx --results-directory $(Agent.TempDirectory)/tests
+            displayName: Build and test
+          - task: PublishTestResults@2
+            condition: always()
+            inputs: { testResultsFormat: VSTest, testResultsFiles: '$(Agent.TempDirectory)/tests/*.trx' }
+          - script: |
+              for s in Device; do
+                deployment/docker/build-image.sh $s $(GitVersion.SemVer) $(acrLoginServer)
+                docker push $(acrLoginServer)/atmnexus/$(echo $s | tr A-Z a-z)-service:$(GitVersion.SemVer)
+              done
+            displayName: Build and push images
+            env: { DOCKER_BUILDKIT: 1 }
+          - task: PublishPipelineArtifact@1
+            inputs: { targetPath: deployment/helm, artifact: helm }
+          - script: echo "##vso[build.updatebuildnumber]$(GitVersion.SemVer)"
+
+  # ---- Deploy stages (one template, four environments) -------------------------------------------------
+  - stage: DEV
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - template: deployment/pipelines/deploy.yml
+        parameters: { environment: DEV, valuesFile: values-dev.yaml, aksConnection: aks-dev, runSmoke: true }
+
+  - stage: SIT
+    dependsOn: DEV
+    jobs:
+      - template: deployment/pipelines/deploy.yml
+        parameters: { environment: SIT, valuesFile: values-sit.yaml, aksConnection: aks-sit, runSmoke: true, runRegression: true }
+
+  - stage: UAT
+    dependsOn: SIT
+    condition: and(succeeded(), or(startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), eq(variables.isRelease, 'True')))
+    jobs:
+      - template: deployment/pipelines/deploy.yml
+        parameters: { environment: UAT, valuesFile: values-uat.yaml, aksConnection: aks-uat, runSmoke: true }
+
+  - stage: PROD
+    dependsOn: UAT
+    condition: and(succeeded(), eq(variables.isRelease, 'True'))
+    jobs:
+      - template: deployment/pipelines/deploy.yml
+        parameters: { environment: PROD, valuesFile: values-prod.yaml, aksConnection: aks-prod, runSmoke: true, canary: true }

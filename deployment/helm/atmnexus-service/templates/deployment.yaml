@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "svc.name" . }}
+  labels: {{- include "svc.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 25%, maxUnavailable: 0 } }
+  selector:
+    matchLabels: { app.kubernetes.io/name: {{ include "svc.name" . }} }
+  template:
+    metadata:
+      labels: {{- include "svc.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "svc.name" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext: { runAsNonRoot: true, runAsUser: 1654, seccompProfile: { type: RuntimeDefault } }
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: DoNotSchedule, labelSelector: { matchLabels: { app.kubernetes.io/name: {{ include "svc.name" . }} } } }
+      containers:
+        - name: {{ include "svc.name" . }}
+          image: {{ include "svc.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [{ name: http, containerPort: {{ .Values.port }} }]
+          envFrom: [{ configMapRef: { name: {{ include "svc.name" . }}-config } }]
+          {{- with .Values.secretRefs }}
+          env:
+            {{- range . }}
+            - name: {{ .env }}
+              valueFrom: { secretKeyRef: { name: {{ .secret }}, key: {{ .key }} } }
+            {{- end }}
+          {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          startupProbe: { httpGet: { path: {{ .Values.probes.live }}, port: http }, failureThreshold: 30, periodSeconds: 2 }
+          livenessProbe: { httpGet: { path: {{ .Values.probes.live }}, port: http }, periodSeconds: 10 }
+          readinessProbe: { httpGet: { path: {{ .Values.probes.ready }}, port: http }, periodSeconds: 5, failureThreshold: 3 }
+          lifecycle: { preStop: { sleep: { seconds: 15 } } }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            {{- if .Values.keyVault.enabled }}
+            - { name: kv, mountPath: /secrets, readOnly: true }
+            {{- end }}
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        {{- if .Values.keyVault.enabled }}
+        - name: kv
+          csi: { driver: secrets-store.csi.k8s.io, readOnly: true, volumeAttributes: { secretProviderClass: {{ include "svc.name" . }}-kv } }
+        {{- end }}

@@ -1,0 +1,41 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: {{ include "svc.name" . }} }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ include "svc.name" . }} }
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - { type: Resource, resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }} } } }
+  behavior: { scaleDown: { stabilizationWindowSeconds: 600 } }
+---
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: {{ include "svc.name" . }} }
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector: { matchLabels: { app.kubernetes.io/name: {{ include "svc.name" . }} } }
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: {{ include "svc.name" . }} }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: {{ include "svc.name" . }} } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        {{- range .Values.networkPolicy.ingressNamespaces }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ . }} } }
+        {{- end }}
+      ports: [{ port: {{ .Values.port }} }]
+  egress:
+    {{- range .Values.networkPolicy.egress }}
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .namespace }} } } }]
+      ports: [{ port: {{ .port }} }]
+    {{- end }}
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+{{- end }}

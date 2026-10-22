@@ -1,0 +1,36 @@
+# Defaults shared by all services. Per-service overrides: deployment/helm/values/<service>.yaml
+# Per-environment overrides:                               deployment/helm/env/values-<env>.yaml
+nameOverride: ""
+image:
+  registry: atmnexus.azurecr.io
+  repository: atmnexus/device-service
+  tag: ""                # set by the pipeline (semver); digest preferred in PROD
+  digest: ""
+  pullPolicy: IfNotPresent
+replicaCount: 3
+port: 8080
+config: {}               # non-secret env vars -> ConfigMap
+secretRefs: []           # [{env: ConnectionStrings__Postgres, secret: svc-secrets, key: postgres}]
+keyVault:
+  enabled: true
+  name: ""
+  tenantId: ""
+  clientId: ""
+  objects: []            # [{name: device-postgres-connection, alias: ""}]
+resources:
+  requests: { cpu: 250m, memory: 256Mi }
+  limits: { memory: 512Mi }
+autoscaling: { enabled: true, minReplicas: 3, maxReplicas: 20, targetCPUUtilizationPercentage: 65 }
+pdb: { minAvailable: 2 }
+probes:
+  live: /health/live
+  ready: /health/ready
+terminationGracePeriodSeconds: 60
+networkPolicy:
+  enabled: true
+  ingressNamespaces: [ingress]
+  egress:
+    - { namespace: data, port: 5432 }
+    - { namespace: kafka, port: 9093 }
+    - { namespace: observability, port: 4317 }
+ingress: { enabled: false }

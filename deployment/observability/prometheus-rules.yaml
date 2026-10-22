@@ -1,0 +1,37 @@
+groups:
+  - name: atmnexus-slo
+    rules:
+      # SLI: successful API requests (excl. 4xx caller errors). SLO 99.99% => 4.3 min/month error budget.
+      - record: sli:http_availability:ratio_rate5m
+        expr: |
+          1 - ( sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+                / sum(rate(http_server_request_duration_seconds_count[5m])) )
+      - alert: ApiAvailabilityBurnFast
+        expr: (1 - sli:http_availability:ratio_rate5m) > (14.4 * 0.0001)
+        for: 2m
+        labels: { severity: page }
+        annotations: { summary: "Burning the 99.99% error budget 14x too fast", runbook: "docs/10-observability.md#runbooks" }
+      - alert: TelemetryIngestStalled
+        expr: sum(rate(atm_telemetry_messages_total[5m])) < 0.5 * sum(rate(atm_telemetry_messages_total[5m] offset 1h))
+        for: 10m
+        labels: { severity: page }
+        annotations: { summary: "Telemetry ingest rate dropped >50% vs 1h ago: gateway, IdP or database problem" }
+      - alert: OutboxLag
+        expr: max(atmnexus_outbox_pending) > 5000
+        for: 5m
+        labels: { severity: ticket }
+        annotations: { summary: "Outbox relay is behind: Kafka unreachable or relay stuck" }
+      - alert: FleetOfflineSpike
+        expr: atmnexus_atms_offline / atmnexus_atms_active > 0.05
+        for: 5m
+        labels: { severity: page }
+        annotations: { summary: ">5% of the fleet offline: likely network/carrier incident, not ATM faults" }
+      - alert: XfsCallErrorRate
+        expr: sum(rate(xfs_errors_total[10m])) / sum(rate(xfs_calls_total[10m])) > 0.05
+        for: 10m
+        labels: { severity: ticket }
+        annotations: { summary: "XFS error rate >5% across reporting agents (bad vendor SP release?)" }
+      - alert: KafkaConsumerLag
+        expr: max by (consumergroup) (kafka_consumergroup_lag) > 100000
+        for: 10m
+        labels: { severity: page }
