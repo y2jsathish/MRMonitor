@@ -1,0 +1,18 @@
+nameOverride: device-service
+image: { repository: atmnexus/device-service }
+config:
+  Auth__Authority: https://nexus-idp.example.bank
+  Auth__Audience: atmnexus-api
+  Kafka__BootstrapServers: kafka-bootstrap.kafka.svc:9093
+  Kafka__SecurityProtocol: SaslSsl
+  CommandSigning__PrivateKeyPemPath: /secrets/private.pem
+secretRefs:
+  - { env: ConnectionStrings__Postgres, secret: device-service-secrets, key: device-postgres-connection }
+  - { env: Kafka__SaslPassword, secret: device-service-secrets, key: kafka-sasl-password }
+keyVault:
+  objects:
+    - { name: device-postgres-connection }
+    - { name: kafka-sasl-password }
+    - { name: command-signing-private-pem, alias: private.pem }
+resources: { requests: { cpu: 500m, memory: 512Mi }, limits: { memory: 1Gi } }
+autoscaling: { minReplicas: 3, maxReplicas: 30 }

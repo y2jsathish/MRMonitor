@@ -1,0 +1,7 @@
+nameOverride: deployment-service          # packages, rollouts (canary / maintenance window), publishes deployment.*
+image: { repository: atmnexus/deployment-service }
+config: { Kafka__GroupId: deployment-service, Packages__BlobAccount: stnexuspackages }
+secretRefs: [ { env: ConnectionStrings__Postgres, secret: deployment-service-secrets, key: deployment-postgres-connection } ]
+keyVault: { objects: [ { name: deployment-postgres-connection }, { name: kafka-sasl-password }, { name: package-signing-key } ] }
+autoscaling: { minReplicas: 2, maxReplicas: 8 }
+pdb: { minAvailable: 1 }

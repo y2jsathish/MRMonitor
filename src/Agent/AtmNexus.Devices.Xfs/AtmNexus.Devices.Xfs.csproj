@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>AtmNexus.Devices.Xfs</RootNamespace>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <!-- msxfs.dll is called through P/Invoke; the library still compiles/tests on Linux CI. -->
+    <NoWarn>$(NoWarn);CA1416;SYSLIB1054</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AtmNexus.Devices.Abstractions\AtmNexus.Devices.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="AtmNexus.Contracts" />
+    <Using Include="AtmNexus.Devices" />
+    <Using Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AtmNexus.Tests" />
+  </ItemGroup>
+</Project>

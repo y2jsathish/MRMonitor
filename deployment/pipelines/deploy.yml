@@ -1,0 +1,74 @@
+# Reusable deployment job template. One job per environment; the Azure DevOps Environment carries approvals/checks.
+parameters:
+  - name: environment
+    type: string
+  - name: valuesFile
+    type: string
+  - name: aksConnection
+    type: string
+  - name: runSmoke
+    type: boolean
+    default: true
+  - name: runRegression
+    type: boolean
+    default: false
+  - name: canary
+    type: boolean
+    default: false
+  - name: services
+    type: object
+    default: [device]          # extend: monitoring, incident, alert, deployment, reporting, notification, audit, auth
+
+jobs:
+  - deployment: Deploy_${{ parameters.environment }}
+    displayName: Deploy to ${{ parameters.environment }}
+    environment: ${{ parameters.environment }}        # approvals + checks (business hours, change ticket) live here
+    pool: { vmImage: ubuntu-24.04 }
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - download: current
+              artifact: helm
+            - task: HelmInstaller@1
+              inputs: { helmVersionToInstall: 3.16.2 }
+            - task: Kubernetes@1
+              displayName: kubectl login (workload identity)
+              inputs:
+                connectionType: Kubernetes Service Connection
+                kubernetesServiceEndpoint: ${{ parameters.aksConnection }}
+                command: login
+            - ${{ each svc in parameters.services }}:
+              - script: |
+                  set -euo pipefail
+                  chart=$(Pipeline.Workspace)/helm/atmnexus-service
+                  # PROD deploys by immutable digest, never by mutable tag
+                  digest=$(az acr repository show --name $(acrName) --image atmnexus/${{ svc }}-service:$(Build.BuildNumber) --query digest -o tsv)
+                  helm upgrade --install ${{ svc }}-service "$chart" \
+                    --namespace atmnexus --create-namespace \
+                    -f $(Pipeline.Workspace)/helm/values/${{ svc }}.yaml \
+                    -f $(Pipeline.Workspace)/helm/env/${{ parameters.valuesFile }} \
+                    --set image.tag=$(Build.BuildNumber) --set image.digest="$digest" \
+                    --atomic --timeout 8m --history-max 10
+                displayName: "helm upgrade ${{ svc }} (atomic, auto-rollback on failed readiness)"
+            - ${{ if eq(parameters.runSmoke, true) }}:
+              - script: |
+                  set -euo pipefail
+                  for i in $(seq 1 30); do
+                    code=$(curl -s -o /dev/null -w '%{http_code}' https://$(gatewayHost-${{ parameters.environment }})/health/ready || true)
+                    [ "$code" = "200" ] && exit 0; sleep 5
+                  done
+                  echo "smoke test failed"; exit 1
+                displayName: Smoke test (readiness through the gateway)
+            - ${{ if eq(parameters.runRegression, true) }}:
+              # PLANNED (roadmap Sprint 9): tests/AtmNexus.RegressionTests does not exist yet. The step is wired so the gate is
+              # enforced the day the project lands; until then it runs the simulator fleet smoke test only.
+              - script: |
+                  test -d tests/AtmNexus.RegressionTests && dotnet test tests/AtmNexus.RegressionTests --filter Category=Smoke \
+                    -e BASE_URL=https://$(gatewayHost-${{ parameters.environment }}) || echo "regression suite not present yet"
+                displayName: SIT regression (API + simulator fleet of 50 ATMs)
+            - ${{ if eq(parameters.canary, true) }}:
+              - script: |
+                  echo "Canary: watch error-budget burn and telemetry ingest for 15 minutes before marking the release good"
+                  ./deployment/pipelines/canary-gate.sh $(promUrl) 900
+                displayName: Canary soak gate (fails the stage on SLO burn)

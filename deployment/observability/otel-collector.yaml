@@ -1,0 +1,29 @@
+receivers:
+  otlp: { protocols: { grpc: { endpoint: 0.0.0.0:4317 }, http: { endpoint: 0.0.0.0:4318 } } }
+processors:
+  batch: { send_batch_size: 8192, timeout: 5s }
+  memory_limiter: { check_interval: 1s, limit_percentage: 80, spike_limit_percentage: 20 }
+  # never let cardholder-looking data reach a backend, even if a developer logs it by mistake
+  transform/redact:
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(body, "\\b(\\d{6})\\d{3,9}(\\d{4})\\b", "$$1******$$2")
+  tail_sampling:
+    decision_wait: 10s
+    policies:
+      - { name: errors, type: status_code, status_code: { status_codes: [ERROR] } }
+      - { name: slow, type: latency, latency: { threshold_ms: 1000 } }
+      - { name: sample, type: probabilistic, probabilistic: { sampling_percentage: 5 } }
+exporters:
+  prometheus: { endpoint: 0.0.0.0:8889, resource_to_telemetry_conversion: { enabled: true } }
+  otlp/tempo: { endpoint: tempo.observability.svc:4317, tls: { insecure: true } }
+  elasticsearch/logs:
+    endpoints: ["https://elastic.example.bank:9200"]
+    logs_index: atmnexus-logs
+    api_key: ${env:ELASTIC_API_KEY}
+service:
+  pipelines:
+    metrics: { receivers: [otlp], processors: [memory_limiter, batch], exporters: [prometheus] }
+    traces:  { receivers: [otlp], processors: [memory_limiter, tail_sampling, batch], exporters: [otlp/tempo] }
+    logs:    { receivers: [otlp], processors: [memory_limiter, transform/redact, batch], exporters: [elasticsearch/logs] }

@@ -1,0 +1,179 @@
+# Complete, production-shaped manifest for the Device Service (the same shape is generated for all 9 services by the Helm chart).
+# kubectl apply -f deployment/k8s/device-service.yaml -n atmnexus
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: device-service
+  namespace: atmnexus
+  annotations:
+    azure.workload.identity/client-id: "00000000-0000-0000-0000-000000000000"   # AKS workload identity -> Key Vault
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: device-service-config
+  namespace: atmnexus
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  Auth__Authority: "https://nexus-idp.example.bank"
+  Auth__Audience: "atmnexus-api"
+  Kafka__BootstrapServers: "kafka-bootstrap.kafka.svc:9093"
+  Kafka__SecurityProtocol: "SaslSsl"
+  Kafka__SslCaLocation: "/etc/ssl/kafka/ca.crt"
+  CommandSigning__KeyId: "cmd-2025-01"
+  CommandSigning__PrivateKeyPemPath: "/secrets/command-signing/private.pem"
+  OfflineDetector__OfflineAfter: "00:03:00"
+  LogStore__Directory: "/var/atmnexus/logs"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc:4317"
+  OTEL_SERVICE_NAME: "atmnexus-device-service"
+---
+# Secrets are never in Git: Azure Key Vault -> CSI driver -> mounted files + synced Kubernetes Secret (env refs below).
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: device-service-kv
+  namespace: atmnexus
+spec:
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    clientID: "00000000-0000-0000-0000-000000000000"
+    keyvaultName: "kv-atmnexus-prod"
+    tenantId: "00000000-0000-0000-0000-000000000000"
+    objects: |
+      array:
+        - objectName: device-postgres-connection
+          objectType: secret
+        - objectName: kafka-sasl-password
+          objectType: secret
+        - objectName: command-signing-private-pem
+          objectType: secret
+          objectAlias: private.pem
+  secretObjects:
+    - secretName: device-service-secrets
+      type: Opaque
+      data:
+        - objectName: device-postgres-connection
+          key: postgres
+        - objectName: kafka-sasl-password
+          key: kafka-sasl-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-service
+  namespace: atmnexus
+  labels: { app.kubernetes.io/name: device-service, app.kubernetes.io/part-of: atmnexus }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 25%, maxUnavailable: 0 }        # 99.99%: never dip below desired capacity during a rollout
+  selector:
+    matchLabels: { app.kubernetes.io/name: device-service }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: device-service, app.kubernetes.io/part-of: atmnexus }
+      annotations:
+        prometheus.io/scrape: "false"                          # metrics are pushed via OTLP
+    spec:
+      serviceAccountName: device-service
+      terminationGracePeriodSeconds: 60                        # lets 30 s agent long-polls finish
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: DoNotSchedule, labelSelector: { matchLabels: { app.kubernetes.io/name: device-service } } }
+        - { maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app.kubernetes.io/name: device-service } } }
+      containers:
+        - name: device-service
+          image: atmnexus.azurecr.io/atmnexus/device-service:1.0.0     # pinned by digest in prod via Helm
+          imagePullPolicy: IfNotPresent
+          ports: [{ name: http, containerPort: 8080 }]
+          envFrom: [{ configMapRef: { name: device-service-config } }]
+          env:
+            - { name: ConnectionStrings__Postgres, valueFrom: { secretKeyRef: { name: device-service-secrets, key: postgres } } }
+            - { name: Kafka__SaslPassword, valueFrom: { secretKeyRef: { name: device-service-secrets, key: kafka-sasl-password } } }
+            - { name: Kafka__SaslUsername, value: "device-service" }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }                            # no CPU limit: avoids CFS throttling on latency-sensitive ingest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          startupProbe: { httpGet: { path: /health/live, port: http }, failureThreshold: 30, periodSeconds: 2 }
+          livenessProbe: { httpGet: { path: /health/live, port: http }, periodSeconds: 10, timeoutSeconds: 2 }
+          readinessProbe: { httpGet: { path: /health/ready, port: http }, periodSeconds: 5, timeoutSeconds: 3, failureThreshold: 3 }
+          lifecycle:
+            preStop: { sleep: { seconds: 15 } }                # drain: stop receiving traffic before SIGTERM handling
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: logs, mountPath: /var/atmnexus/logs }
+            - { name: kv, mountPath: /secrets/command-signing, readOnly: true }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: logs, emptyDir: { sizeLimit: 2Gi } }
+        - name: kv
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: { secretProviderClass: device-service-kv }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-service
+  namespace: atmnexus
+spec:
+  selector: { app.kubernetes.io/name: device-service }
+  ports: [{ name: http, port: 80, targetPort: http }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: device-service
+  namespace: atmnexus
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: device-service }
+  minReplicas: 3
+  maxReplicas: 30
+  metrics:
+    - { type: Resource, resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } } }
+  behavior:
+    scaleDown: { stabilizationWindowSeconds: 600 }             # agents reconnect in waves; don't flap
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: device-service
+  namespace: atmnexus
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app.kubernetes.io/name: device-service } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: device-service
+  namespace: atmnexus
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: device-service } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress } }   # API gateway only
+      ports: [{ port: 8080 }]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: data } } }]   # PostgreSQL
+      ports: [{ port: 5432 }]
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kafka } } }]
+      ports: [{ port: 9093 }]
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: observability } } }]
+      ports: [{ port: 4317 }]
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]                  # OIDC JWKS discovery; restrict to the IdP CIDR in prod
+      ports: [{ port: 443 }]

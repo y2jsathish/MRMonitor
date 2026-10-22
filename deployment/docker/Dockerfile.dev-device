@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7
+# Template for every ASP.NET Core microservice. Render with deployment/docker/build-image.sh <ServiceName> <tag>
+#   src/Services/AtmNexus.Services.Device/AtmNexus.Services.Device.csproj -> src/Services/AtmNexus.Services.<Name>/AtmNexus.Services.<Name>.csproj
+#   AtmNexus.Services.Device.dll     -> AtmNexus.Services.<Name>.dll
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+COPY global.json Directory.Build.props Directory.Packages.props ./
+COPY src/Shared/ src/Shared/
+COPY src/Services/ src/Services/
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore "src/Services/AtmNexus.Services.Device/AtmNexus.Services.Device.csproj"
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish "src/Services/AtmNexus.Services.Device/AtmNexus.Services.Device.csproj" -c Release -o /app --no-restore \
+      /p:UseAppHost=false /p:DebugType=none /p:InformationalVersion=${VERSION:-0.0.0-local}
+
+# Chiseled = no shell, no package manager, non-root (UID 1654). Smaller attack surface, fewer CVEs to triage.
+FROM mcr.microsoft.com/dotnet/aspnet:9.0-noble-chiseled AS runtime
+WORKDIR /app
+COPY --from=build /app .
+ENV ASPNETCORE_URLS=http://+:8080 \
+    DOTNET_EnableDiagnostics=0 \
+    DOTNET_gcServer=0 \
+    DOTNET_TieredPGO=1
+EXPOSE 8080
+USER 1654
+ENTRYPOINT ["dotnet", "AtmNexus.Services.Device.dll"]

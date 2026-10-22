@@ -1,0 +1,12 @@
+nameOverride: reporting-service           # dashboard read models, scheduled reports, EJ search (Elasticsearch)
+image: { repository: atmnexus/reporting-service }
+config: { Kafka__GroupId: reporting-service, Elastic__Uri: "https://elastic.example.bank:9200" }
+secretRefs: [ { env: ConnectionStrings__Postgres, secret: reporting-service-secrets, key: reporting-postgres-connection } ]
+keyVault: { objects: [ { name: reporting-postgres-connection }, { name: kafka-sasl-password }, { name: elastic-api-key } ] }
+autoscaling: { minReplicas: 2, maxReplicas: 10 }
+networkPolicy:
+  egress:
+    - { namespace: data, port: 5432 }
+    - { namespace: kafka, port: 9093 }
+    - { namespace: observability, port: 4317 }
+    - { namespace: elastic, port: 9200 }

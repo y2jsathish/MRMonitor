@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1.7
+# ATM simulator image: run N of these to load-test the platform (see docs/09-devops.md "Load test").
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+COPY global.json Directory.Build.props Directory.Packages.props ./
+COPY src/Shared/ src/Shared/
+COPY src/Agent/ src/Agent/
+COPY src/Simulator/ src/Simulator/
+RUN dotnet publish src/Simulator/AtmNexus.Simulator/AtmNexus.Simulator.csproj -c Release -o /app /p:UseAppHost=false
+
+FROM mcr.microsoft.com/dotnet/runtime:9.0-noble-chiseled
+WORKDIR /app
+COPY --from=build /app .
+USER 1654
+ENTRYPOINT ["dotnet", "AtmNexus.Simulator.dll"]

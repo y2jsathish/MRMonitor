@@ -1,0 +1,7 @@
+nameOverride: monitoring-service          # consumes atm.status.changed / atm.offline, evaluates rules, runs the AI scoring client
+image: { repository: atmnexus/monitoring-service }
+config: { Kafka__GroupId: monitoring-service, Ai__Endpoint: "https://nexus-ml.example.bank/score" }
+secretRefs:
+  - { env: ConnectionStrings__Postgres, secret: monitoring-service-secrets, key: monitoring-postgres-connection }
+keyVault: { objects: [ { name: monitoring-postgres-connection }, { name: kafka-sasl-password } ] }
+resources: { requests: { cpu: 500m, memory: 512Mi }, limits: { memory: 1Gi } }

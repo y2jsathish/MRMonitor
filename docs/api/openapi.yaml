@@ -1,0 +1,548 @@
+openapi: 3.1.0
+info:
+  title: ATM Nexus API
+  version: 1.0.0
+  description: |
+    Vendor-neutral ATM monitoring and management platform.
+
+    **Conventions**
+    * Auth: OAuth2 / OIDC bearer JWT. Authorisation is by **permission** (`permissions` claim), documented per operation in `x-required-permission`.
+    * Errors: RFC 9457 `application/problem+json` (`ProblemDetails`); validation errors use `ValidationProblemDetails`.
+    * Times: ISO-8601 UTC. IDs: UUID. Pagination: `page` (1-based) + `pageSize` (1-200, default 50).
+    * Idempotency: `Idempotency-Key` header is honoured on POST /api/incidents, /api/alerts, /api/atms/{id}/restart, /deploy (24 h window).
+    * Every response carries `traceparent` for correlation.
+  contact: { name: ATM Nexus Platform Team }
+servers:
+  - url: https://nexus-api.example.bank
+    description: Production (DEV/SIT/UAT use nexus-api-{env}.example.bank)
+security:
+  - oidc: []
+tags:
+  - { name: ATMs }
+  - { name: Alerts }
+  - { name: Incidents }
+  - { name: Commands }
+  - { name: Deployments }
+  - { name: Dashboard }
+  - { name: Agent, description: "Endpoints called by the ATM agent (device-certificate based OAuth2 client credentials)" }
+
+paths:
+  /api/atms:
+    get:
+      tags: [ATMs]
+      operationId: listAtms
+      summary: List ATMs (sorted worst health first)
+      x-required-permission: atm.read
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/HealthLevel' } }
+        - { name: connectivity, in: query, schema: { enum: [ONLINE, OFFLINE, UNKNOWN] } }
+        - { name: branch, in: query, schema: { type: string, maxLength: 32 }, description: "Branch code" }
+        - { name: vendor, in: query, schema: { type: string, maxLength: 32 }, description: "Vendor code (NCR, DN, HYOSUNG, ...)" }
+        - { name: search, in: query, schema: { type: string, maxLength: 64 }, description: "Matches atm_code, branch name, city (ILIKE)" }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200': { description: "Page of ATMs", content: { application/json: { schema: { $ref: '#/components/schemas/AtmPage' } } } }
+        '400': { $ref: '#/components/responses/ValidationProblem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/atms/{id}:
+    get:
+      tags: [ATMs]
+      operationId: getAtm
+      summary: ATM detail
+      x-required-permission: atm.read
+      parameters: [ { $ref: '#/components/parameters/AtmId' } ]
+      responses:
+        '200': { description: "ATM", content: { application/json: { schema: { $ref: '#/components/schemas/AtmDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/atms/{id}/status:
+    get:
+      tags: [ATMs]
+      operationId: getAtmStatus
+      summary: Live status - health score, components, devices, cash units
+      x-required-permission: atm.read
+      parameters: [ { $ref: '#/components/parameters/AtmId' } ]
+      responses:
+        '200': { description: "Status", content: { application/json: { schema: { $ref: '#/components/schemas/AtmStatus' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/atms/{id}/twin:
+    get:
+      tags: [ATMs]
+      operationId: getAtmTwin
+      summary: Digital twin - device tree with state, health and fault models
+      x-required-permission: atm.read
+      parameters: [ { $ref: '#/components/parameters/AtmId' } ]
+      responses:
+        '200': { description: "Twin", content: { application/json: { schema: { $ref: '#/components/schemas/TwinDocument' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/atms/{id}/restart:
+    post:
+      tags: [Commands]
+      operationId: restartAtm
+      summary: Queue a restart (application, XFS, device, Windows service, or whole ATM)
+      description: |
+        `target=atm` is **disruptive**: the command is created `PENDING_APPROVAL` and is only signed and delivered after a *different* user with
+        `atm.command.approve` calls `POST /api/commands/{id}/approve`. All other targets are signed immediately.
+        The agent re-verifies signature, addressing, expiry, local policy, replay and idle state; the final outcome is reported asynchronously.
+      x-required-permission: atm.command.execute
+      parameters:
+        - { $ref: '#/components/parameters/AtmId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RestartRequest' } } }
+      responses:
+        '202':
+          description: Accepted (queued or awaiting approval)
+          headers: { Location: { schema: { type: string }, description: "Resource URL of the command (/api/commands/{commandId})" } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/QueuedCommand' } } }
+        '400': { $ref: '#/components/responses/ValidationProblem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: "A command of the same type is already in flight for this ATM", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+  /api/commands/{id}/approve:
+    post:
+      tags: [Commands]
+      operationId: approveCommand
+      summary: Second-person approval of a disruptive command
+      x-required-permission: atm.command.approve
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '202': { description: "Approved, signed and queued", content: { application/json: { schema: { $ref: '#/components/schemas/QueuedCommand' } } } }
+        '403': { description: "Approver is the requester, or lacks permission", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: "Command not awaiting approval or expired", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+  /api/atms/{id}/deploy:
+    post:
+      tags: [Deployments]
+      operationId: deployToAtm
+      summary: Schedule a package deployment to one ATM (fleet rollouts use /api/rollouts)
+      x-required-permission: deployment.manage
+      parameters:
+        - { $ref: '#/components/parameters/AtmId' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/DeployRequest' } } }
+      responses:
+        '202': { description: "Scheduled (approval required when the package is not pre-approved)", content: { application/json: { schema: { $ref: '#/components/schemas/Deployment' } } } }
+        '400': { $ref: '#/components/responses/ValidationProblem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: "Package incompatible with ATM (OS/vendor app/agent version) or deployment already active", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+  /api/alerts:
+    post:
+      tags: [Alerts]
+      operationId: createAlert
+      summary: Raise an alert manually (field report, external monitoring bridge)
+      x-required-permission: alert.ack
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateAlertRequest' } } }
+      responses:
+        '201': { description: "Created (or merged into the active alert with the same fingerprint, `occurrences` incremented)", content: { application/json: { schema: { $ref: '#/components/schemas/Alert' } } } }
+        '400': { $ref: '#/components/responses/ValidationProblem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [Alerts]
+      operationId: listAlerts
+      summary: List alerts
+      x-required-permission: alert.read
+      parameters:
+        - { name: state, in: query, schema: { enum: [OPEN, ACKNOWLEDGED, CLEARED, SUPPRESSED] } }
+        - { name: severity, in: query, schema: { $ref: '#/components/schemas/Severity' } }
+        - { name: atm, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200': { description: "Page of alerts", content: { application/json: { schema: { $ref: '#/components/schemas/AlertPage' } } } }
+  /api/incidents:
+    post:
+      tags: [Incidents]
+      operationId: createIncident
+      summary: Create an incident (manual or from alert)
+      x-required-permission: incident.manage
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateIncidentRequest' } } }
+      responses:
+        '201':
+          description: Created
+          headers: { Location: { schema: { type: string } } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Incident' } } }
+        '400': { $ref: '#/components/responses/ValidationProblem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: "An open incident already exists for this ATM and category (returns the existing incident id in `extensions.incidentId`)", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboard
+      summary: Fleet health summary for the NOC dashboard
+      x-required-permission: atm.read
+      responses:
+        '200': { description: "Dashboard", content: { application/json: { schema: { $ref: '#/components/schemas/Dashboard' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ------------------------------ Agent API ------------------------------
+  /api/agent/telemetry:
+    post:
+      tags: [Agent]
+      operationId: ingestTelemetry
+      summary: Heartbeat + snapshot + queued events (idempotent)
+      description: |
+        Authenticated with an OAuth2 token whose `client_id` equals the ATM code and scope `atm.agent` (issued via mTLS client authentication).
+        Rate limit: token bucket 30 burst, +10/min per ATM. Body limit 1 MB.
+      x-required-scope: atm.agent
+      security: [ { agentOAuth: [atm.agent] } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/AtmTelemetry' } } }
+      responses:
+        '200': { description: "Accepted", content: { application/json: { schema: { $ref: '#/components/schemas/IngestResult' } } } }
+        '400': { $ref: '#/components/responses/ValidationProblem' }
+        '403': { description: "Token's ATM does not match body.atmCode", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+        '404': { description: "ATM not registered or decommissioned", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/agent/commands/next:
+    get:
+      tags: [Agent]
+      operationId: nextCommand
+      summary: Long-poll for the next signed command
+      security: [ { agentOAuth: [atm.agent] } ]
+      parameters: [ { name: waitSeconds, in: query, schema: { type: integer, minimum: 0, maximum: 30, default: 0 } } ]
+      responses:
+        '200': { description: "Signed command", content: { application/json: { schema: { $ref: '#/components/schemas/SignedRemoteCommand' } } } }
+        '204': { description: "Nothing queued within waitSeconds" }
+  /api/agent/commands/{id}/result:
+    post:
+      tags: [Agent]
+      operationId: completeCommand
+      summary: Report command outcome
+      security: [ { agentOAuth: [atm.agent] } ]
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RemoteCommandResult' } } } }
+      responses:
+        '204': { description: "Recorded" }
+        '400': { $ref: '#/components/responses/ValidationProblem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/agent/ej:
+    post:
+      tags: [Agent]
+      operationId: ingestEj
+      summary: Batch of parsed EJ transactions (masked PAN only; max 5 MB)
+      security: [ { agentOAuth: [atm.agent] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '202': { description: "Accepted, published to atm.ej.batch" } }
+  /api/agent/inventory:
+    post:
+      tags: [Agent]
+      operationId: ingestInventory
+      summary: Software and patch inventory (max 5 MB)
+      security: [ { agentOAuth: [atm.agent] } ]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '202': { description: "Accepted" } }
+
+components:
+  securitySchemes:
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://nexus-idp.example.bank/.well-known/openid-configuration
+    agentOAuth:
+      type: oauth2
+      description: Client credentials authenticated with an mTLS device certificate (RFC 8705)
+      flows:
+        clientCredentials:
+          tokenUrl: https://nexus-idp.example.bank/connect/token
+          scopes: { atm.agent: Agent access for the ATM identified by client_id }
+  parameters:
+    AtmId: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: false, schema: { type: string, minLength: 8, maxLength: 64 } }
+  responses:
+    ValidationProblem: { description: "Validation failed", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ValidationProblemDetails' } } } }
+    Unauthorized: { description: "Missing/invalid/expired token", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+    Forbidden: { description: "Authenticated but lacks the required permission (or out of region scope)", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+    NotFound: { description: "Resource not found", content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+    TooManyRequests: { description: "Rate limited", headers: { Retry-After: { schema: { type: integer } } }, content: { application/problem+json: { schema: { $ref: '#/components/schemas/ProblemDetails' } } } }
+  schemas:
+    ProblemDetails:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        traceId: { type: string }
+    ValidationProblemDetails:
+      allOf:
+        - { $ref: '#/components/schemas/ProblemDetails' }
+        - type: object
+          properties: { errors: { type: object, additionalProperties: { type: array, items: { type: string } } } }
+    HealthLevel: { type: string, enum: [HEALTHY, DEGRADED, CRITICAL, DOWN] }
+    Severity: { type: string, enum: [Info, Warning, Major, Critical] }
+    AtmSummary:
+      type: object
+      required: [id, code, vendor, healthScore, healthLevel, connectivity, commissionStatus]
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, example: ATM-000123 }
+        vendor: { type: string, example: NCR }
+        model: { type: [string, 'null'] }
+        branchCode: { type: [string, 'null'] }
+        branch: { type: [string, 'null'] }
+        city: { type: [string, 'null'] }
+        healthScore: { type: integer, minimum: 0, maximum: 100 }
+        healthLevel: { $ref: '#/components/schemas/HealthLevel' }
+        connectivity: { type: string, enum: [ONLINE, OFFLINE, UNKNOWN] }
+        lastSeenAt: { type: [string, 'null'], format: date-time }
+        commissionStatus: { type: string, enum: [PLANNED, ACTIVE, MAINTENANCE, DECOMMISSIONED] }
+    AtmDetail:
+      allOf:
+        - { $ref: '#/components/schemas/AtmSummary' }
+        - type: object
+          properties:
+            serialNumber: { type: [string, 'null'] }
+            ipAddress: { type: [string, 'null'] }
+            osVersion: { type: [string, 'null'] }
+            agentVersion: { type: [string, 'null'] }
+            xfsVersion: { type: [string, 'null'] }
+            applicationName: { type: [string, 'null'] }
+            applicationVersion: { type: [string, 'null'] }
+            installDate: { type: [string, 'null'], format: date }
+            tagsJson: { type: [string, 'null'], description: "JSON object as string" }
+            latitude: { type: [number, 'null'] }
+            longitude: { type: [number, 'null'] }
+    AtmPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AtmSummary' } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer, format: int64 }
+    DeviceStatus:
+      type: object
+      properties:
+        logicalName: { type: string, example: CashDispenser }
+        deviceClass: { type: string, example: CASH_DISPENSER }
+        state: { type: string, enum: [ONLINE, OFFLINE, POWER_OFF, NO_DEVICE, HARDWARE_ERROR, USER_ERROR, BUSY, FRAUD_ATTEMPT, UNKNOWN] }
+        attributes: { type: object, additionalProperties: { type: string }, example: { safeDoor: closed, dispenser: ok } }
+        lastStateChangeAt: { type: string, format: date-time }
+    CashUnit:
+      type: object
+      properties:
+        unitNumber: { type: integer }
+        unitId: { type: string }
+        unitType: { type: string, enum: [Dispense, Reject, Retract, Recycle, Deposit, Coin, Unknown] }
+        currency: { type: [string, 'null'], minLength: 3, maxLength: 3 }
+        denomination: { type: integer }
+        noteCount: { type: integer }
+        initialCount: { type: integer }
+        minimum: { type: integer }
+        maximum: { type: integer }
+        status: { type: string, enum: [Ok, Full, High, Low, Empty, Inoperative, Missing, NoValue, NoReference, Manipulated, Unknown] }
+    AtmStatus:
+      type: object
+      properties:
+        atmId: { type: string, format: uuid }
+        atmCode: { type: string }
+        healthScore: { type: integer }
+        healthLevel: { $ref: '#/components/schemas/HealthLevel' }
+        connectivity: { type: string }
+        inService: { type: boolean }
+        lastSeenAt: { type: [string, 'null'], format: date-time }
+        components: { type: object, additionalProperties: { type: integer }, example: { devices: 60, cash: 40, application: 100, network: 100, security: 100, history: 70 } }
+        reasons: { type: array, items: { type: string } }
+        devices: { type: array, items: { $ref: '#/components/schemas/DeviceStatus' } }
+        cashUnits: { type: array, items: { $ref: '#/components/schemas/CashUnit' } }
+        openAlerts: { type: integer }
+    TwinFault:
+      type: object
+      properties:
+        code: { type: string, example: CARD_JAM }
+        severity: { type: string, enum: [INFO, WARNING, MAJOR, CRITICAL] }
+        description: { type: string }
+        since: { type: [string, 'null'], format: date-time }
+    TwinComponent:
+      type: object
+      properties:
+        slot: { type: string, enum: [Card Reader, EPP, Deposit Module, Dispenser, Sensors, Camera, Printer, Other] }
+        logicalName: { type: string }
+        deviceClass: { type: string }
+        state: { type: string }
+        health: { type: string, enum: [HEALTHY, DEGRADED, FAULTED, OFFLINE] }
+        attributes: { type: object, additionalProperties: { type: string } }
+        faults: { type: array, items: { $ref: '#/components/schemas/TwinFault' } }
+        cashUnits: { type: [array, 'null'], items: { $ref: '#/components/schemas/CashUnit' } }
+    TwinDocument:
+      type: object
+      properties:
+        atmId: { type: string, format: uuid }
+        atmCode: { type: string }
+        vendor: { type: string }
+        model: { type: [string, 'null'] }
+        healthScore: { type: integer }
+        healthLevel: { $ref: '#/components/schemas/HealthLevel' }
+        connectivity: { type: string }
+        lastSeenAt: { type: [string, 'null'], format: date-time }
+        healthComponents: { type: object, additionalProperties: { type: integer } }
+        components: { type: array, items: { $ref: '#/components/schemas/TwinComponent' } }
+        faults: { type: array, items: { $ref: '#/components/schemas/TwinFault' } }
+        generatedAt: { type: string, format: date-time }
+    RestartRequest:
+      type: object
+      required: [target, reason]
+      properties:
+        target: { type: string, enum: [application, xfs, device, service, atm] }
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9_. -]{1,64}$'
+          description: Required when target is `device` (XFS logical name) or `service` (must be on the ATM's local allow-list)
+        reason: { type: string, minLength: 1, maxLength: 500, description: "Incident number or justification (audited)" }
+    QueuedCommand:
+      type: object
+      properties:
+        commandId: { type: string, format: uuid }
+        state: { type: string, enum: [PENDING_APPROVAL, PENDING] }
+        expiresAt: { type: string, format: date-time }
+    DeployRequest:
+      type: object
+      required: [packageId, strategy]
+      properties:
+        packageId: { type: string, format: uuid }
+        strategy: { type: string, enum: [IMMEDIATE, MAINTENANCE_WINDOW, CANARY] }
+        scheduledAt: { type: string, format: date-time, description: "Required for MAINTENANCE_WINDOW; must be in the future and inside the ATM's maintenance window" }
+        reason: { type: string, maxLength: 500 }
+    Deployment:
+      type: object
+      properties:
+        deploymentId: { type: string, format: uuid }
+        state: { type: string, enum: [SCHEDULED, DOWNLOADING, INSTALLING, SUCCEEDED, FAILED, ROLLED_BACK, CANCELLED] }
+        scheduledAt: { type: string, format: date-time }
+        requiresApproval: { type: boolean }
+    CreateAlertRequest:
+      type: object
+      required: [atmCode, code, severity, message]
+      properties:
+        atmCode: { type: string }
+        code: { type: string, pattern: '^[A-Z0-9_]{3,64}$' }
+        severity: { $ref: '#/components/schemas/Severity' }
+        source: { type: string, maxLength: 64, default: manual }
+        message: { type: string, minLength: 1, maxLength: 1000 }
+        data: { type: object, additionalProperties: { type: string } }
+    Alert:
+      type: object
+      properties:
+        alertId: { type: string, format: uuid }
+        atmCode: { type: string }
+        code: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        source: { type: string }
+        message: { type: string }
+        state: { type: string, enum: [OPEN, ACKNOWLEDGED, CLEARED, SUPPRESSED] }
+        occurrences: { type: integer }
+        firstRaisedAt: { type: string, format: date-time }
+        lastRaisedAt: { type: string, format: date-time }
+        incidentId: { type: [string, 'null'], format: uuid }
+    AlertPage:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Alert' } }
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer, format: int64 }
+    CreateIncidentRequest:
+      type: object
+      required: [atmCode, title, priority, category]
+      properties:
+        atmCode: { type: string }
+        title: { type: string, minLength: 5, maxLength: 200 }
+        description: { type: string, maxLength: 8000 }
+        priority: { type: integer, minimum: 1, maximum: 4 }
+        category: { type: string, enum: [HARDWARE, CASH, SOFTWARE, NETWORK, SECURITY, OTHER] }
+        alertIds: { type: array, items: { type: string, format: uuid }, maxItems: 50 }
+        assignedGroup: { type: string, maxLength: 64 }
+    Incident:
+      type: object
+      properties:
+        incidentId: { type: string, format: uuid }
+        number: { type: string, example: INC-2025-000123 }
+        atmCode: { type: string }
+        title: { type: string }
+        priority: { type: integer }
+        category: { type: string }
+        state: { type: string, enum: [NEW, ASSIGNED, IN_PROGRESS, PENDING, RESOLVED, CLOSED] }
+        assignedGroup: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        slaDueAt: { type: [string, 'null'], format: date-time }
+    Dashboard:
+      type: object
+      properties:
+        totalAtms: { type: integer }
+        byHealthLevel: { type: object, additionalProperties: { type: integer }, example: { HEALTHY: 48210, DEGRADED: 1320, CRITICAL: 410, DOWN: 60 } }
+        offline: { type: integer }
+        openAlertsBySeverity: { type: object, additionalProperties: { type: integer } }
+        cashLowUnits: { type: integer }
+        cashEmptyUnits: { type: integer }
+        openIncidents: { type: integer }
+        worst: { type: array, items: { $ref: '#/components/schemas/AtmSummary' }, maxItems: 10 }
+        generatedAt: { type: string, format: date-time }
+    AtmTelemetry:
+      type: object
+      required: [atmCode, agentVersion, at, healthScore, level, devices, cashUnits, events, metrics]
+      properties:
+        atmCode: { type: string }
+        agentVersion: { type: string }
+        at: { type: string, format: date-time }
+        healthScore: { type: integer, minimum: 0, maximum: 100 }
+        level: { type: string, enum: [Healthy, Degraded, Critical, Down] }
+        devices: { type: array, maxItems: 64, items: { type: object } }
+        cashUnits: { type: array, maxItems: 32, items: { type: object } }
+        events: { type: array, maxItems: 500, items: { type: object } }
+        metrics: { type: object, additionalProperties: { type: number } }
+    IngestResult:
+      type: object
+      properties:
+        eventsAccepted: { type: integer }
+        alertsCreated: { type: integer }
+        statusChanged: { type: boolean }
+    SignedRemoteCommand:
+      type: object
+      required: [command, keyId, signature]
+      properties:
+        command:
+          type: object
+          properties:
+            commandId: { type: string, format: uuid }
+            atmCode: { type: string }
+            type: { type: string, enum: [RestartApplication, RestartXfs, RestartDevice, RestartWindowsService, CollectLogs, CollectEj, RunDiagnostics, RebootAtm, ShutdownAtm] }
+            parameters: { type: object, additionalProperties: { type: string } }
+            issuedBy: { type: string }
+            approvedBy: { type: [string, 'null'] }
+            issuedAt: { type: string, format: date-time }
+            expiresAt: { type: string, format: date-time }
+            nonce: { type: string }
+        keyId: { type: string }
+        signature: { type: string, description: "Base64 ECDSA P-256 / SHA-256 (IEEE P1363) over RemoteCommand.Canonical()" }
+    RemoteCommandResult:
+      type: object
+      required: [commandId, status, completedAt]
+      properties:
+        commandId: { type: string, format: uuid }
+        status: { type: string, enum: [Succeeded, Failed, Rejected, Expired] }
+        output: { type: [string, 'null'], maxLength: 8000 }
+        error: { type: [string, 'null'], maxLength: 8000 }
+        completedAt: { type: string, format: date-time }

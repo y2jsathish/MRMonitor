@@ -1,0 +1,6 @@
+nameOverride: audit-service               # tamper-evident audit sink: consumes audit events, verifies hash chain, exports to SIEM
+image: { repository: atmnexus/audit-service }
+config: { Kafka__GroupId: audit-service, Siem__Endpoint: "https://siem.example.bank/ingest" }
+secretRefs: [ { env: ConnectionStrings__Postgres, secret: audit-service-secrets, key: audit-postgres-connection } ]
+keyVault: { objects: [ { name: audit-postgres-connection }, { name: kafka-sasl-password }, { name: siem-token } ] }
+autoscaling: { minReplicas: 2, maxReplicas: 6 }

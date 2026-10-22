@@ -1,0 +1,7 @@
+nameOverride: auth-service                # OIDC provider facade: users, roles, permissions claim, device (agent) enrolment, token issuance
+image: { repository: atmnexus/auth-service }
+config: { Issuer: "https://nexus-idp.example.bank" }
+secretRefs: [ { env: ConnectionStrings__Postgres, secret: auth-service-secrets, key: auth-postgres-connection } ]
+keyVault: { objects: [ { name: auth-postgres-connection }, { name: token-signing-key } ] }
+resources: { requests: { cpu: 500m, memory: 512Mi }, limits: { memory: 1Gi } }
+autoscaling: { minReplicas: 3, maxReplicas: 15 }

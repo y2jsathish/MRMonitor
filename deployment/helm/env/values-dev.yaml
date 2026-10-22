@@ -1,0 +1,6 @@
+autoscaling: { enabled: false }
+replicaCount: 1
+pdb: { minAvailable: 0 }
+keyVault: { name: kv-atmnexus-dev }
+config: { ASPNETCORE_ENVIRONMENT: Development, Logging__LogLevel__Default: Debug }
+resources: { requests: { cpu: 100m, memory: 192Mi }, limits: { memory: 384Mi } }

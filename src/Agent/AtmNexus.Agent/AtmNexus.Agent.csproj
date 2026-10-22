@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>AtmNexus.Agent</RootNamespace>
+    <AssemblyName>AtmNexus.Agent</AssemblyName>
+    <!--
+      msxfs.dll on virtually all deployed ATMs is 32-bit, and a 64-bit process cannot load it.
+      Publish the agent for win-x86:  dotnet publish -c Release -r win-x86 --self-contained -p:PublishSingleFile=true
+      (see deployment/agent/install-agent.ps1). CA1416 is suppressed: Windows-only APIs are guarded at runtime.
+    -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UserSecretsId>atmnexus-agent</UserSecretsId>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AtmNexus.Agent.Core\AtmNexus.Agent.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" />
+    <PackageReference Include="Microsoft.Extensions.Logging.EventLog" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" />
+    <PackageReference Include="System.Diagnostics.EventLog" />
+    <PackageReference Include="System.Management" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="AtmNexus.Contracts" />
+    <Using Include="AtmNexus.Devices" />
+    <Using Include="Microsoft.Extensions.Logging" />
+    <Using Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

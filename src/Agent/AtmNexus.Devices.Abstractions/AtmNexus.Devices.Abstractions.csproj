@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>AtmNexus.Devices</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\AtmNexus.Contracts\AtmNexus.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="AtmNexus.Contracts" />
+  </ItemGroup>
+</Project>
