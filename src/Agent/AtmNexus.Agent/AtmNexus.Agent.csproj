@@ -34,6 +34,6 @@
     <Using Include="Microsoft.Extensions.Options" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
