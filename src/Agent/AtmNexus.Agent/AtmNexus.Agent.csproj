@@ -5,7 +5,7 @@
     <AssemblyName>AtmNexus.Agent</AssemblyName>
     <!--
       msxfs.dll on virtually all deployed ATMs is 32-bit, and a 64-bit process cannot load it.
-      Publish the agent for win-x86:  dotnet publish -c Release -r win-x86 --self-contained -p:PublishSingleFile=true
+      Publish the agent for win-x86 as a self-contained single file (dotnet publish, Release, runtime win-x86)
       (see deployment/agent/install-agent.ps1). CA1416 is suppressed: Windows-only APIs are guarded at runtime.
     -->
     <NoWarn>$(NoWarn);CA1416</NoWarn>
